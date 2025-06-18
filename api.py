@@ -2,11 +2,11 @@ import json
 from typing import List, Dict, Any
 import os
 from tqdm import tqdm
-from openai import OpenAI
+import google.generativeai as genai
 from pinecone import Pinecone, ServerlessSpec
 
 # Initialize clients
-openai_client = OpenAI(api_key=os.getenv("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"))
+genai.configure(api_key=os.getenv("AIzaSyAWwXNH-7VJDWxQcb9vnT983Dox08QonWI"))
 pinecone = Pinecone(api_key=os.getenv("pcsk_7Mpz1P_E3VbuXTRcWGpaMnBzv7cR9zjLJCvR9G4XMHW9X46yFTaT5vhuRNvbHH3TpYtD48"))
 
 # Initialize Pinecone index
@@ -14,7 +14,7 @@ index_name = "discourse-embeddings"
 if index_name not in pinecone.list_indexes().names():
     pinecone.create_index(
         name=index_name,
-        dimension=1536,  # OpenAI ada-002 dimension
+        dimension=768,  # Gemini embedding dimension
         metric="cosine",
         spec=ServerlessSpec(
             cloud="aws",
@@ -69,7 +69,7 @@ def extract_thread(root_num: int, posts: List[Dict[str, Any]], thread_map: Dict[
     return thread
 
 def embed_and_index_threads(topics: Dict[int, Dict[str, Any]], batch_size: int = 100):
-    """Embed threads using OpenAI and index in Pinecone"""
+    """Embed threads using Gemini and index in Pinecone"""
     vectors = []
     
     for topic_id, topic_data in tqdm(topics.items()):
@@ -88,12 +88,12 @@ def embed_and_index_threads(topics: Dict[int, Dict[str, Any]], batch_size: int =
                 post["content"].strip() for post in thread
             )
             
-            # Get embedding from OpenAI
-            response = openai_client.embeddings.create(
-                input=combined_text,
-                model="text-embedding-3-small"
-            )
-            embedding = response.data[0].embedding
+            # Get embedding from Gemini
+            embedding = genai.embed_content(
+                model="models/embedding-001",
+                content=combined_text,
+                task_type="retrieval_document"
+            )["embedding"]
             
             # Prepare vector for Pinecone
             vector = {
@@ -119,13 +119,13 @@ def embed_and_index_threads(topics: Dict[int, Dict[str, Any]], batch_size: int =
         index.upsert(vectors=vectors)
 
 def semantic_search(query: str, top_k: int = 5) -> List[Dict[str, Any]]:
-    """Search for relevant threads using OpenAI embeddings"""
+    """Search for relevant threads using Gemini embeddings"""
     # Get query embedding
-    query_response = openai_client.embeddings.create(
-        input=query,
-        model="text-embedding-3-small"
-    )
-    query_embedding = query_response.data[0].embedding
+    query_embedding = genai.embed_content(
+        model="models/embedding-001",
+        content=query,
+        task_type="retrieval_query"
+    )["embedding"]
     
     # Search Pinecone
     search_response = index.query(
@@ -148,21 +148,20 @@ def semantic_search(query: str, top_k: int = 5) -> List[Dict[str, Any]]:
     return results
 
 def generate_answer(query: str, context_texts: List[str]) -> str:
-    """Generate answer using OpenAI"""
+    """Generate answer using Gemini"""
     context = "\n\n---\n\n".join(context_texts)
-    messages = [
-        {"role": "system", "content": "You are a helpful assistant that answers questions based on forum discussions."},
-        {"role": "user", "content": f"Based on these forum excerpts:\n\n{context}\n\nQuestion: {query}\n\nAnswer:"}
-    ]
+    prompt = f"""Based on these forum excerpts:
+
+{context}
+
+Question: {query}
+
+Answer:"""
+
+    model = genai.GenerativeModel('gemini-pro')
+    response = model.generate_content(prompt)
     
-    response = openai_client.chat.completions.create(
-        model="gpt-4-turbo-preview",
-        messages=messages,
-        temperature=0.7,
-        max_tokens=500
-    )
-    
-    return response.choices[0].message.content
+    return response.text
 
 # Example usage
 if __name__ == "__main__":
