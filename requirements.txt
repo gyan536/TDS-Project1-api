@@ -1,0 +1,5 @@
+Flask==2.3.3
+openai==1.14.3
+pinecone-client==3.2.2
+tqdm==4.66.2
+gunicorn==21.2.0
