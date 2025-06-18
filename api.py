@@ -5,12 +5,29 @@ from tqdm import tqdm
 import chromadb
 import google.generativeai as genai
 from pathlib import Path
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import urllib.parse
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
+
+# Initialize FastAPI app
+app = FastAPI(
+    title="Discourse Search API",
+    description="API for semantic search and answer generation using Gemini and ChromaDB",
+    version="1.0.0"
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Configure Gemini API
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyAWwXNH-7VJDWxQcb9vnT983Dox08QonWI")
@@ -23,6 +40,24 @@ collection = chroma_client.get_or_create_collection(
     name="discourse_threads",
     metadata={"hnsw:space": "cosine"}
 )
+
+# Pydantic models for request/response
+class SearchRequest(BaseModel):
+    query: str
+    top_k: int = 5
+
+class GenerateAnswerRequest(BaseModel):
+    query: str
+    context_texts: List[str]
+
+class SearchResponse(BaseModel):
+    results: List[Dict[str, Any]]
+
+class GenerateAnswerResponse(BaseModel):
+    answer: str
+
+class InitializeResponse(BaseModel):
+    message: str
 
 def get_gemini_embedding(text: str) -> List[float]:
     """Get embedding vector using Gemini embedding model"""
@@ -201,72 +236,69 @@ Answer:"""
         print(f"Error generating answer: {str(e)}")
         return "Sorry, I encountered an error while generating the answer."
 
-class RequestHandler(BaseHTTPRequestHandler):
-    def _set_headers(self, content_type='application/json'):
-        self.send_response(200)
-        self.send_header('Content-type', content_type)
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
-        self.end_headers()
+# FastAPI endpoints
+@app.get("/")
+async def root():
+    return {
+        "message": "Discourse Search API is running",
+        "version": "1.0.0",
+        "status": "healthy"
+    }
 
-    def do_OPTIONS(self):
-        self._set_headers()
-        self.wfile.write(b'')
+@app.post("/search", response_model=SearchResponse)
+async def search(request: SearchRequest):
+    try:
+        results = semantic_search(request.query, request.top_k)
+        return {"results": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-    def do_GET(self):
-        if self.path == '/':
-            self._set_headers()
-            response = {
-                "message": "Discourse Search API is running",
-                "version": "1.0.0",
-                "status": "healthy"
-            }
-            self.wfile.write(json.dumps(response).encode())
-        else:
-            self.send_response(404)
-            self.end_headers()
-            self.wfile.write(b'Not Found')
+@app.post("/generate-answer", response_model=GenerateAnswerResponse)
+async def generate_answer_endpoint(request: GenerateAnswerRequest):
+    try:
+        if not request.query or not request.context_texts:
+            raise HTTPException(status_code=400, detail="Query and context_texts are required")
+        answer = generate_answer(request.query, request.context_texts)
+        return {"answer": answer}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-    def do_POST(self):
-        content_length = int(self.headers['Content-Length'])
-        post_data = self.rfile.read(content_length)
-        data = json.loads(post_data.decode('utf-8'))
-
-        if self.path == '/search':
-            query = data.get('query', '')
-            top_k = data.get('top_k', 5)
-            results = semantic_search(query, top_k)
-            self._set_headers()
-            self.wfile.write(json.dumps({"results": results}).encode())
-
-        elif self.path == '/generate-answer':
-            query = data.get('query', '')
-            context_texts = data.get('context_texts', [])
-            answer = generate_answer(query, context_texts)
-            self._set_headers()
-            self.wfile.write(json.dumps({"answer": answer}).encode())
-
-        elif self.path == '/initialize':
-            # Process data in the background
-            topics = process_posts("discourse_posts.json")
-            if topics:
-                embed_and_index_threads(topics)
-            self._set_headers()
-            self.wfile.write(json.dumps({"message": "Data initialization complete"}).encode())
-
-        else:
-            self.send_response(404)
-            self.end_headers()
-            self.wfile.write(b'Not Found')
-
-def run_server():
-    # Get port from environment variable or default to 10000 (Render's default)
-    port = int(os.getenv("PORT", 10000))
-    server_address = ('0.0.0.0', port)  # Bind to all interfaces
-    httpd = HTTPServer(server_address, RequestHandler)
-    print(f"Example app listening on port {port}")
-    httpd.serve_forever()
+@app.post("/initialize", response_model=InitializeResponse)
+async def initialize():
+    try:
+        # Check if file exists
+        if not os.path.exists("discourse_posts.json"):
+            raise HTTPException(
+                status_code=404,
+                detail="discourse_posts.json file not found. Please ensure the file exists in the root directory."
+            )
+            
+        # Process posts and verify data
+        topics = process_posts("discourse_posts.json")
+        if not topics:
+            raise HTTPException(
+                status_code=500,
+                detail="No topics were processed from the JSON file. Please check the file format."
+            )
+            
+        # Embed and index threads
+        embed_and_index_threads(topics)
+        
+        return {
+            "message": f"Data initialization complete. Processed {len(topics)} topics.",
+            "topics_processed": len(topics)
+        }
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except json.JSONDecodeError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid JSON format in discourse_posts.json: {str(e)}"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
-    run_server()
+    import uvicorn
+    port = int(os.getenv("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
