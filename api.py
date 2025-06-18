@@ -5,6 +5,21 @@ from tqdm import tqdm
 import chromadb
 import google.generativeai as genai
 from pathlib import Path
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
+
+# Initialize FastAPI app
+app = FastAPI(title="Discourse Search API")
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Configure Gemini API
 genai.configure(api_key="AIzaSyAWwXNH-7VJDWxQcb9vnT983Dox08QonWI")
@@ -203,6 +218,29 @@ def test_queries(queries: List[str], top_k: int = 3):
         else:
             print("No relevant results found.")
 
+# API endpoints
+@app.get("/")
+async def root():
+    return {"message": "Discourse Search API is running"}
+
+@app.post("/search")
+async def search(query: str, top_k: int = 5):
+    try:
+        results = semantic_search(query, top_k=top_k)
+        if not results:
+            raise HTTPException(status_code=404, detail="No results found")
+        return {"results": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/generate-answer")
+async def generate_answer_endpoint(query: str, context_texts: List[str]):
+    try:
+        answer = generate_answer(query, context_texts)
+        return {"answer": answer}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 # Example usage
 if __name__ == "__main__":
     try:
@@ -220,19 +258,10 @@ if __name__ == "__main__":
         embed_and_index_threads(topics)
         print("✅ Indexing complete")
         
-        # Test search
-        print("\n🔍 Testing search functionality...")
-        query = "If a student scores 10/10 on GA4 as well as a bonus, how would it appear on the dashboard?"
-        results = semantic_search(query, top_k=3)
-        
-        if results:
-            print("\nTop search results:")
-            for i, res in enumerate(results, 1):
-                print(f"\n[{i}] Score: {res['score']:.4f}")
-                print(f"Topic: {res['topic_title']}")
-                print(f"Content snippet: {res['combined_text'][:500]}...\n")
-        else:
-            print("❌ No results found for the test query.")
+        # Start the FastAPI server
+        print("\n🚀 Starting API server...")
+        port = int(os.getenv("PORT", 8000))
+        uvicorn.run(app, host="0.0.0.0", port=port)
             
     except FileNotFoundError:
         print("❌ Error: discourse_posts.json file not found!")
