@@ -1,5 +1,5 @@
-Flask==2.3.3
-google-generativeai==0.3.2
-pinecone-client==3.2.2
-tqdm==4.66.2
-gunicorn==21.2.0
+tqdm>=4.66.1
+chromadb>=0.4.22
+sentence-transformers
+google-generativeai>=0.3.2
+pathlib>=1.0.1
